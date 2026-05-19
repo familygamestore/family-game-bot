@@ -18,27 +18,24 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', secrets.token_hex(32))
 
 # ====================================================================================================
-# KONFIGURASI DATABASE - PAKAI DATABASE URL DARI RAILWAY
+# KONFIGURASI DATABASE - PAKSA PAKAI SQLITE
 # ====================================================================================================
 
-DATABASE_URL = os.getenv('DATABASE_URL')
+# HAPUS atau KOMENTAR semua kode yang cek DATABASE_URL
+# PAKSA PAKAI SQLITE SAJA
 
-if DATABASE_URL and ('postgres' in DATABASE_URL or 'postgresql' in DATABASE_URL):
-    # Jika pakai PostgreSQL di Railway
-    app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
-    print("✅ Using PostgreSQL database from Railway")
-    
-    # Tambahkan engine options untuk PostgreSQL
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        'pool_pre_ping': True,
-        'pool_recycle': 300,
-    }
-else:
-    # Fallback ke SQLite jika tidak ada DATABASE_URL
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
-    print("✅ Using SQLite database (local)")
-
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,
+}
+
+print("=" * 50)
+print("📊 WEB DASHBOARD DATABASE")
+print("=" * 50)
+print(f"✅ Database: SQLite (database.db)")
+print(f"✅ PostgreSQL: DISABLED (to avoid errors)")
+print("=" * 50)
 
 db = SQLAlchemy(app)
 login_manager = LoginManager()
@@ -114,7 +111,7 @@ class LicenseKey(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     key = db.Column(db.String(100), unique=True, nullable=False)
-    plan = db.Column(db.String(50), nullable=False)
+    plan = db.Column(db.String(50), nullable=False)  # premium, enterprise
     duration_days = db.Column(db.Integer, default=30)
     
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'))
@@ -140,7 +137,7 @@ class PaymentTransaction(db.Model):
     payment_method = db.Column(db.String(50))
     payment_details = db.Column(db.Text, nullable=True)
     
-    status = db.Column(db.String(50), default='pending')
+    status = db.Column(db.String(50), default='pending')  # pending, success, failed, expired
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     paid_at = db.Column(db.DateTime, nullable=True)
     expired_at = db.Column(db.DateTime, nullable=True)
@@ -625,7 +622,7 @@ if __name__ == '__main__':
             db.session.commit()
             print(f"✅ Admin account created: {admin_email}")
         
-        print(f"✅ Database: {app.config['SQLALCHEMY_DATABASE_URI']}")
+        print(f"✅ Database: SQLite (database.db)")
     
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
