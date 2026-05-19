@@ -12,12 +12,22 @@ services:
     restart: unless-stopped
     networks:
       - bot_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U botuser"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     networks:
       - bot_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api:
     build: ./api
@@ -26,9 +36,13 @@ services:
     environment:
       DATABASE_URL: postgresql://botuser:botpassword@postgres:5432/botdb
       REDIS_URL: redis://redis:6379
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-admin123}
+      PORT: 8000
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - bot_network
@@ -40,9 +54,13 @@ services:
     environment:
       DATABASE_URL: postgresql://botuser:botpassword@postgres:5432/botdb
       API_URL: http://api:8000
+      SECRET_KEY: ${DASHBOARD_SECRET_KEY:-supersecretkey}
+      PORT: 5000
     depends_on:
-      - postgres
-      - api
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
     restart: unless-stopped
     networks:
       - bot_network
@@ -52,8 +70,11 @@ services:
     environment:
       DISCORD_TOKEN: ${DISCORD_TOKEN}
       API_URL: http://api:8000
+      BOT_PREFIX: ${BOT_PREFIX:-!}
+      OWNER_IDS: ${OWNER_IDS}
     depends_on:
-      - api
+      api:
+        condition: service_started
     restart: unless-stopped
     networks:
       - bot_network
