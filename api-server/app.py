@@ -1,47 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional
-from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
 import secrets
 import asyncpg
 import json
 import os
 
+# Import routes
+from routes import license_router, auth_router, payment_router, stats_router
+
 # ====================================================================================================
 # DATABASE CONFIGURATION
 # ====================================================================================================
 
-# PRIORITAS: Ambil dari environment variable Railway
 DATABASE_URL = os.getenv('DATABASE_URL')
+REDIS_URL = os.getenv('REDIS_URL', 'redis://redis:6379')
 
 if not DATABASE_URL:
     print("=" * 60)
     print("❌ ERROR: DATABASE_URL environment variable not set!")
     print("=" * 60)
-    print("Please add PostgreSQL database and set DATABASE_URL in Railway Variables")
-    print("")
-    print("Steps:")
-    print("1. Click 'New' → 'Database' → 'PostgreSQL'")
-    print("2. Copy the DATABASE_URL from PostgreSQL service")
-    print("3. Go to API service → Variables → Add Variable")
-    print("4. Set Key='DATABASE_URL' and paste the value")
-    print("5. Redeploy")
-    print("=" * 60)
     DATABASE_URL = None
-else:
-    # Mask password for logging
-    masked_url = DATABASE_URL.replace(DATABASE_URL.split(':')[2].split('@')[0], '****')
-    print(f"✅ DATABASE_URL loaded: {masked_url[:50]}...")
 
-# Redis configuration
-REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
-
-# Redis - Optional
+# Redis client
 redis_client = None
 try:
     import redis
@@ -54,14 +40,31 @@ except Exception as e:
 # ====================================================================================================
 # DATABASE FUNCTIONS
 # ====================================================================================================
+
 async def init_db():
     """Initialize database tables"""
     if not DATABASE_URL:
-        print("❌ Cannot initialize database: DATABASE_URL not set")
         return False
     
     try:
         conn = await asyncpg.connect(DATABASE_URL)
+        
+        # Create users table
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                is_admin BOOLEAN DEFAULT FALSE,
+                is_active BOOLEAN DEFAULT TRUE,
+                subscription_plan TEXT DEFAULT 'free',
+                subscription_expires TIMESTAMP,
+                api_key TEXT UNIQUE,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        ''')
         
         # Create licenses table
         await conn.execute('''
@@ -70,7 +73,7 @@ async def init_db():
                 license_key TEXT UNIQUE NOT NULL,
                 plan TEXT NOT NULL,
                 duration_days INTEGER NOT NULL,
-                created_by TEXT NOT NULL,
+                created_by INTEGER REFERENCES users(id),
                 created_at TIMESTAMP DEFAULT NOW(),
                 used_by TEXT,
                 used_at TIMESTAMP,
@@ -85,11 +88,34 @@ async def init_db():
                 id SERIAL PRIMARY KEY,
                 server_id TEXT UNIQUE NOT NULL,
                 server_name TEXT NOT NULL,
-                owner_id TEXT NOT NULL,
+                server_icon TEXT,
+                owner_id INTEGER REFERENCES users(id),
                 license_key TEXT,
                 license_expires TIMESTAMP,
+                features TEXT DEFAULT '{}',
+                is_active BOOLEAN DEFAULT TRUE,
                 joined_at TIMESTAMP DEFAULT NOW(),
-                last_active TIMESTAMP DEFAULT NOW()
+                last_active TIMESTAMP DEFAULT NOW(),
+                member_count INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0
+            )
+        ''')
+        
+        # Create payment_transactions table
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS payment_transactions (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                amount FLOAT NOT NULL,
+                currency TEXT DEFAULT 'USD',
+                plan TEXT NOT NULL,
+                duration_days INTEGER NOT NULL,
+                transaction_id TEXT UNIQUE,
+                payment_method TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT NOW(),
+                paid_at TIMESTAMP,
+                expired_at TIMESTAMP
             )
         ''')
         
@@ -111,17 +137,22 @@ async def init_db():
         print(f"❌ Database init error: {e}")
         return False
 
+async def get_db_connection():
+    """Get database connection"""
+    if not DATABASE_URL:
+        return None
+    return await asyncpg.connect(DATABASE_URL)
+
 # ====================================================================================================
 # LIFESPAN EVENT HANDLER
 # ====================================================================================================
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     print("🚀 Starting API Server...")
-    print(f"📊 Port: {os.getenv('PORT', '8080')}")
     
     if DATABASE_URL:
-        # Test database connection
         try:
             conn = await asyncpg.connect(DATABASE_URL)
             await conn.close()
@@ -129,11 +160,8 @@ async def lifespan(app: FastAPI):
             await init_db()
         except Exception as e:
             print(f"❌ Database connection failed: {e}")
-            print("💡 Make sure PostgreSQL is running and DATABASE_URL is correct")
-    else:
-        print("❌ DATABASE_URL not configured - database features will not work")
     
-    yield  # Server runs here
+    yield
     
     # Shutdown
     print("🛑 API Server shutting down...")
@@ -143,9 +171,11 @@ async def lifespan(app: FastAPI):
 # ====================================================================================================
 # FASTAPI APP
 # ====================================================================================================
+
 app = FastAPI(
-    title="Family Game Store API", 
-    version="1.0.0",
+    title="Family Game Store API",
+    description="API for Discord Bot License Management",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -158,39 +188,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ====================================================================================================
-# MODELS (sama seperti sebelumnya)
-# ====================================================================================================
-class LicenseVerifyRequest(BaseModel):
-    license_key: str
-    server_id: str
-
-class LicenseVerifyResponse(BaseModel):
-    valid: bool
-    plan: Optional[str] = None
-    expires: Optional[str] = None
-    features: Optional[dict] = None
-    error: Optional[str] = None
-
-class GenerateLicenseRequest(BaseModel):
-    plan: str
-    duration: int = 30
-    created_by: str
-
-class UsageReportRequest(BaseModel):
-    license_key: str
-    server_id: str
-    command: Optional[str] = None
-    user_count: int = 0
-    message_count: int = 0
-    invite_count: int = 0
+# Include routers
+app.include_router(license_router)
+app.include_router(auth_router)
+app.include_router(payment_router)
+app.include_router(stats_router)
 
 # ====================================================================================================
-# API ENDPOINTS
+# ROOT ENDPOINTS
 # ====================================================================================================
+
 @app.get("/")
 async def root():
-    return {"message": "Family Game Store API is running", "status": "online"}
+    return {
+        "message": "Family Game Store API is running",
+        "status": "online",
+        "version": "2.0.0",
+        "timestamp": datetime.utcnow().isoformat()
+    }
 
 @app.get("/api/health")
 async def health_check():
@@ -218,10 +233,37 @@ async def health_check():
         "status": "healthy",
         "database": "connected" if db_ok else "disconnected",
         "database_error": db_error,
-        "database_url_configured": DATABASE_URL is not None,
         "redis": "connected" if redis_ok else "disabled",
         "timestamp": datetime.utcnow().isoformat()
     }
+
+# ====================================================================================================
+# LICENSE ENDPOINTS
+# ====================================================================================================
+
+from pydantic import BaseModel
+
+class LicenseVerifyRequest(BaseModel):
+    license_key: str
+    server_id: str
+
+class LicenseVerifyResponse(BaseModel):
+    valid: bool
+    plan: Optional[str] = None
+    expires: Optional[str] = None
+    features: Optional[dict] = None
+    error: Optional[str] = None
+
+class GenerateLicenseRequest(BaseModel):
+    plan: str
+    duration: int = 30
+    created_by: str
+
+class ActivateLicenseRequest(BaseModel):
+    license_key: str
+    server_id: str
+    server_name: str
+    owner_id: int
 
 @app.post("/api/verify-license", response_model=LicenseVerifyResponse)
 async def verify_license(request: LicenseVerifyRequest):
@@ -232,7 +274,7 @@ async def verify_license(request: LicenseVerifyRequest):
     try:
         conn = await asyncpg.connect(DATABASE_URL)
         
-        # Check cache first
+        # Check cache
         if redis_client:
             cached = redis_client.get(f"license:{request.license_key}")
             if cached:
@@ -245,42 +287,35 @@ async def verify_license(request: LicenseVerifyRequest):
             "SELECT * FROM licenses WHERE license_key = $1 AND is_used = TRUE",
             request.license_key
         )
-        await conn.close()
         
         if not row:
+            await conn.close()
             return LicenseVerifyResponse(valid=False, error="License not found")
         
         # Check expiration
         if row['expires_at'] and row['expires_at'] < datetime.utcnow():
+            await conn.close()
             return LicenseVerifyResponse(valid=False, error="License expired")
         
         # Check server match
         if row['used_by'] and row['used_by'] != request.server_id:
+            await conn.close()
             return LicenseVerifyResponse(valid=False, error="Server mismatch")
         
-        features = {
-            'premium': {
-                'max_members': 0,
-                'max_giveaways': 0,
-                'custom_commands': True,
-                'voice_xp': True,
-                'level_roles': True
-            },
-            'enterprise': {
-                'max_members': 0,
-                'max_giveaways': 0,
-                'custom_commands': True,
-                'voice_xp': True,
-                'level_roles': True,
-                'multi_server': True
-            }
-        }
+        # Update last active
+        await conn.execute(
+            "UPDATE servers SET last_active = NOW() WHERE server_id = $1",
+            request.server_id
+        )
+        await conn.close()
+        
+        features = get_features_for_plan(row['plan'])
         
         response = LicenseVerifyResponse(
             valid=True,
             plan=row['plan'],
             expires=row['expires_at'].isoformat() if row['expires_at'] else None,
-            features=features.get(row['plan'], {})
+            features=features
         )
         
         # Cache result
@@ -292,7 +327,7 @@ async def verify_license(request: LicenseVerifyRequest):
         return LicenseVerifyResponse(valid=False, error=str(e))
 
 @app.post("/api/generate-license")
-async def generate_license(request: GenerateLicenseRequest, api_key: str = None):
+async def generate_license(request: GenerateLicenseRequest, api_key: str = Header(None)):
     """Generate new license key (Admin only)"""
     if not DATABASE_URL:
         raise HTTPException(status_code=503, detail="Database not configured")
@@ -304,9 +339,14 @@ async def generate_license(request: GenerateLicenseRequest, api_key: str = None)
     expires_at = datetime.utcnow() + timedelta(days=request.duration)
     
     conn = await asyncpg.connect(DATABASE_URL)
+    
+    # Get user ID from username
+    user_row = await conn.fetchrow("SELECT id FROM users WHERE username = $1", request.created_by)
+    user_id = user_row['id'] if user_row else None
+    
     await conn.execute(
         "INSERT INTO licenses (license_key, plan, duration_days, created_by, expires_at) VALUES ($1, $2, $3, $4, $5)",
-        license_key, request.plan, request.duration, request.created_by, expires_at
+        license_key, request.plan, request.duration, user_id, expires_at
     )
     await conn.close()
     
@@ -318,44 +358,68 @@ async def generate_license(request: GenerateLicenseRequest, api_key: str = None)
     }
 
 @app.post("/api/activate-license")
-async def activate_license(license_key: str, server_id: str, server_name: str, owner_id: str):
+async def activate_license(request: ActivateLicenseRequest):
     """Activate license for a server"""
     if not DATABASE_URL:
         return {"success": False, "error": "Database not configured"}
     
     conn = await asyncpg.connect(DATABASE_URL)
     
+    # Check if server exists
+    server = await conn.fetchrow("SELECT * FROM servers WHERE server_id = $1", request.server_id)
+    
+    if not server:
+        # Create server
+        await conn.execute(
+            "INSERT INTO servers (server_id, server_name, owner_id) VALUES ($1, $2, $3)",
+            request.server_id, request.server_name, request.owner_id
+        )
+    
+    # Get license
     license_row = await conn.fetchrow(
         "SELECT * FROM licenses WHERE license_key = $1 AND is_used = FALSE",
-        license_key
+        request.license_key
     )
     
     if not license_row:
         await conn.close()
         return {"success": False, "error": "Invalid or already used license key"}
     
+    # Activate license
     await conn.execute(
         "UPDATE licenses SET is_used = TRUE, used_by = $1, used_at = NOW() WHERE license_key = $2",
-        server_id, license_key
+        request.server_id, request.license_key
     )
     
+    # Update server
     await conn.execute(
         """
-        INSERT INTO servers (server_id, server_name, owner_id, license_key, license_expires)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (server_id) DO UPDATE SET
-            license_key = $4,
-            license_expires = $5,
+        UPDATE servers SET 
+            license_key = $1, 
+            license_expires = $2,
             last_active = NOW()
+        WHERE server_id = $3
         """,
-        server_id, server_name, owner_id, license_key, license_row['expires_at']
+        request.license_key, license_row['expires_at'], request.server_id
     )
+    
+    # Update user subscription if owner exists
+    if request.owner_id:
+        await conn.execute(
+            """
+            UPDATE users SET 
+                subscription_plan = $1,
+                subscription_expires = $2
+            WHERE id = $3
+            """,
+            license_row['plan'], license_row['expires_at'], request.owner_id
+        )
     
     await conn.close()
     
     # Invalidate cache
     if redis_client:
-        redis_client.delete(f"license:{license_key}")
+        redis_client.delete(f"license:{request.license_key}")
     
     return {
         "success": True,
@@ -364,7 +428,7 @@ async def activate_license(license_key: str, server_id: str, server_name: str, o
     }
 
 @app.post("/api/report-usage")
-async def report_usage(request: UsageReportRequest):
+async def report_usage(server_id: str, command: str = None, user_id: str = None):
     """Report bot usage statistics"""
     if not DATABASE_URL:
         return {"success": False, "error": "Database not configured"}
@@ -372,8 +436,15 @@ async def report_usage(request: UsageReportRequest):
     conn = await asyncpg.connect(DATABASE_URL)
     await conn.execute(
         "INSERT INTO usage_stats (server_id, command_name, user_id) VALUES ($1, $2, $3)",
-        request.server_id, request.command, None
+        server_id, command, user_id
     )
+    
+    # Update server message count
+    await conn.execute(
+        "UPDATE servers SET message_count = message_count + 1, last_active = NOW() WHERE server_id = $1",
+        server_id
+    )
+    
     await conn.close()
     return {"success": True}
 
@@ -419,7 +490,9 @@ async def get_server_info(server_id: str):
         "license_key": row['license_key'],
         "license_expires": row['license_expires'].isoformat() if row['license_expires'] else None,
         "joined_at": row['joined_at'].isoformat(),
-        "last_active": row['last_active'].isoformat()
+        "last_active": row['last_active'].isoformat(),
+        "member_count": row['member_count'],
+        "message_count": row['message_count']
     }
 
 @app.get("/api/stats")
@@ -430,36 +503,48 @@ async def get_stats():
     
     conn = await asyncpg.connect(DATABASE_URL)
     
+    total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
     total_licenses = await conn.fetchval("SELECT COUNT(*) FROM licenses")
     active_licenses = await conn.fetchval("SELECT COUNT(*) FROM licenses WHERE is_used = TRUE AND expires_at > NOW()")
     total_servers = await conn.fetchval("SELECT COUNT(*) FROM servers")
+    premium_servers = await conn.fetchval("SELECT COUNT(*) FROM servers WHERE license_key IS NOT NULL AND license_expires > NOW()")
     total_usage = await conn.fetchval("SELECT COUNT(*) FROM usage_stats")
     
     await conn.close()
     
     return {
+        "total_users": total_users,
         "total_licenses": total_licenses,
         "active_licenses": active_licenses,
         "total_servers": total_servers,
+        "premium_servers": premium_servers,
         "total_usage_records": total_usage,
         "timestamp": datetime.utcnow().isoformat()
     }
 
-# ====================================================================================================
-# RUN APP
-# ====================================================================================================
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.getenv('PORT', 8080))
-    print("=" * 50)
-    print("🎮 Family Game Store API Server")
-    print("=" * 50)
-    print(f"🌐 Server will run on port: {port}")
-    print(f"🔗 Health check: http://localhost:{port}/api/health")
-    print("=" * 50)
-    uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=port,
-        log_level="info"
-    )
+def get_features_for_plan(plan: str) -> dict:
+    """Get features based on plan"""
+    features = {
+        'premium': {
+            'max_members': 0,
+            'max_giveaways': 0,
+            'custom_commands': True,
+            'voice_xp': True,
+            'level_roles': True,
+            'welcome_messages': True,
+            'export_stats': True
+        },
+        'enterprise': {
+            'max_members': 0,
+            'max_giveaways': 0,
+            'custom_commands': True,
+            'voice_xp': True,
+            'level_roles': True,
+            'welcome_messages': True,
+            'export_stats': True,
+            'multi_server': True,
+            'dedicated_support': True,
+            'api_access': True
+        }
+    }
+    return features.get(plan, {})
