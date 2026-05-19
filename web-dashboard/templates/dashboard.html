@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Family Game Store Bot{% endblock %}
+
+{% block content %}
+<section class="py-8">
+    <div class="container mx-auto px-4">
+        <h1 class="text-3xl font-bold text-white mb-8">Dashboard</h1>
+        
+        <!-- Stats Cards -->
+        <div class="grid md:grid-cols-4 gap-6 mb-8">
+            <div class="bg-gray-800 rounded-xl p-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400 text-sm">Total Servers</p>
+                        <p class="text-3xl font-bold text-white">{{ servers|length }}</p>
+                    </div>
+                    <i class="fas fa-server text-purple-500 text-3xl"></i>
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-xl p-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400 text-sm">Plan</p>
+                        <p class="text-3xl font-bold text-white">{{ user.subscription_plan|upper }}</p>
+                    </div>
+                    <i class="fas fa-crown text-yellow-500 text-3xl"></i>
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-xl p-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400 text-sm">Expires</p>
+                        <p class="text-3xl font-bold text-white">
+                            {% if user.subscription_expires %}
+                                {{ user.subscription_expires.strftime('%d/%m/%Y') }}
+                            {% else %}
+                                Never
+                            {% endif %}
+                        </p>
+                    </div>
+                    <i class="fas fa-calendar-alt text-blue-500 text-3xl"></i>
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-xl p-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400 text-sm">Member Since</p>
+                        <p class="text-3xl font-bold text-white">{{ user.created_at.strftime('%d/%m/%Y') }}</p>
+                    </div>
+                    <i class="fas fa-user-check text-green-500 text-3xl"></i>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Servers List -->
+        <div class="bg-gray-800 rounded-xl">
+            <div class="p-6 border-b border-gray-700">
+                <h2 class="text-xl font-bold text-white">Your Servers</h2>
+            </div>
+            <div class="p-6">
+                {% if servers %}
+                    <div class="space-y-4">
+                        {% for server in servers %}
+                        <div class="bg-gray-700 rounded-lg p-4 flex items-center justify-between">
+                            <div class="flex items-center space-x-4">
+                                {% if server.server_icon %}
+                                    <img src="{{ server.server_icon }}" class="w-12 h-12 rounded-full">
+                                {% else %}
+                                    <div class="w-12 h-12 bg-purple-600 rounded-full flex items-center justify-center">
+                                        <i class="fas fa-hashtag text-white text-xl"></i>
+                                    </div>
+                                {% endif %}
+                                <div>
+                                    <h3 class="text-white font-semibold">{{ server.server_name }}</h3>
+                                    <p class="text-gray-400 text-sm">ID: {{ server.server_id }}</p>
+                                </div>
+                            </div>
+                            <div class="flex items-center space-x-4">
+                                {% if server.license_key %}
+                                    <span class="bg-green-500 text-white px-3 py-1 rounded-full text-sm">Licensed</span>
+                                    <span class="text-gray-400 text-sm">Expires: {{ server.license_expires.strftime('%d/%m/%Y') if server.license_expires else 'Never' }}</span>
+                                {% else %}
+                                    <span class="bg-yellow-500 text-white px-3 py-1 rounded-full text-sm">Free</span>
+                                    <button onclick="activateLicense({{ server.id }})" class="bg-purple-600 px-4 py-2 rounded-lg text-sm hover:bg-purple-700 transition">
+                                        Activate License
+                                    </button>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="text-center py-8">
+                        <i class="fas fa-robot text-6xl text-gray-600 mb-4"></i>
+                        <p class="text-gray-400">No servers registered yet</p>
+                        <p class="text-gray-500 text-sm mt-2">Invite the bot to your server to get started</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</section>
+
+<script>
+function activateLicense(serverId) {
+    const licenseKey = prompt("Enter your license key:");
+    if (!licenseKey) return;
+    
+    fetch('/api/activate-license', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ server_id: serverId, license_key: licenseKey })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            alert(`License activated! Plan: ${data.plan}`);
+            location.reload();
+        } else {
+            alert(`Error: ${data.error}`);
+        }
+    })
+    .catch(err => alert('Network error'));
+}
+</script>
+{% endblock %}

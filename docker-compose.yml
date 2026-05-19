@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: botuser
+      POSTGRES_PASSWORD: botpassword
+      POSTGRES_DB: botdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - bot_network
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - bot_network
+
+  api:
+    build: ./api
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://botuser:botpassword@postgres:5432/botdb
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    networks:
+      - bot_network
+
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "5000:5000"
+    environment:
+      DATABASE_URL: postgresql://botuser:botpassword@postgres:5432/botdb
+      API_URL: http://api:8000
+    depends_on:
+      - postgres
+      - api
+    restart: unless-stopped
+    networks:
+      - bot_network
+
+  bot:
+    build: ./bot
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      API_URL: http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - bot_network
+
+volumes:
+  postgres_data:
+
+networks:
+  bot_network:
+    driver: bridge

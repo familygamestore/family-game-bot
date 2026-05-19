@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Family Game Store Bot{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .card-hover:hover { transform: translateY(-5px); transition: all 0.3s ease; }
+        .toast { animation: slideIn 0.3s ease; }
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body class="bg-gray-900">
+    <nav class="bg-gray-800 shadow-lg">
+        <div class="container mx-auto px-4 py-3">
+            <div class="flex justify-between items-center">
+                <a href="/" class="flex items-center space-x-2">
+                    <i class="fas fa-gamepad text-purple-500 text-2xl"></i>
+                    <span class="text-xl font-bold text-white">Family Game Store</span>
+                </a>
+                <div class="hidden md:flex space-x-6">
+                    <a href="/" class="text-gray-300 hover:text-white">Home</a>
+                    <a href="/pricing" class="text-gray-300 hover:text-white">Pricing</a>
+                    {% if current_user.is_authenticated %}
+                        <a href="/dashboard" class="text-gray-300 hover:text-white">Dashboard</a>
+                        <a href="/logout" class="text-red-400 hover:text-red-300">Logout</a>
+                    {% else %}
+                        <a href="/login" class="text-gray-300 hover:text-white">Login</a>
+                        <a href="/register" class="bg-purple-600 px-4 py-2 rounded-lg hover:bg-purple-700">Register</a>
+                    {% endif %}
+                </div>
+                <button id="mobileMenuBtn" class="md:hidden text-white"><i class="fas fa-bars text-xl"></i></button>
+            </div>
+        </div>
+    </nav>
+    
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <div class="fixed top-20 right-4 z-50 space-y-2">
+                {% for category, message in messages %}
+                    <div class="toast px-4 py-2 rounded-lg shadow-lg text-white 
+                        {% if category == 'success' %}bg-green-500
+                        {% elif category == 'danger' %}bg-red-500
+                        {% elif category == 'warning' %}bg-yellow-500
+                        {% else %}bg-blue-500{% endif %}">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+    
+    <main>{% block content %}{% endblock %}</main>
+    
+    <footer class="bg-gray-800 py-8 mt-12">
+        <div class="container mx-auto px-4 text-center text-gray-400">
+            <p>&copy; 2025 Family Game Store. All rights reserved.</p>
+        </div>
+    </footer>
+    
+    <script>
+        setTimeout(() => {
+            document.querySelectorAll('.toast').forEach(toast => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            });
+        }, 3000);
+    </script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

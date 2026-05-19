@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}Checkout - Family Game Store Bot{% endblock %}
+
+{% block content %}
+<section class="py-16">
+    <div class="container mx-auto px-4 max-w-2xl">
+        <div class="bg-gray-800 rounded-xl p-8">
+            <h1 class="text-2xl font-bold text-white text-center mb-6">Checkout</h1>
+            
+            <div class="bg-gray-700 rounded-lg p-4 mb-6">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <p class="text-gray-400 text-sm">Plan</p>
+                        <p class="text-xl font-bold text-white">{{ plan.name }}</p>
+                    </div>
+                    <div class="text-right">
+                        <p class="text-gray-400 text-sm">Price</p>
+                        <p class="text-2xl font-bold text-purple-400">${{ plan.price }}</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="mb-6">
+                <label class="block text-gray-300 mb-2">Payment Method</label>
+                <div class="grid md:grid-cols-2 gap-4">
+                    <button onclick="selectPayment('midtrans')" id="btnMidtrans" 
+                        class="payment-btn bg-gray-700 p-4 rounded-lg text-center hover:bg-gray-600 transition">
+                        <i class="fab fa-cc-visa text-2xl mb-2 block"></i>
+                        Midtrans
+                    </button>
+                    <button onclick="selectPayment('xendit')" id="btnXendit" 
+                        class="payment-btn bg-gray-700 p-4 rounded-lg text-center hover:bg-gray-600 transition">
+                        <i class="fas fa-university text-2xl mb-2 block"></i>
+                        Xendit
+                    </button>
+                </div>
+            </div>
+            
+            <button onclick="processPayment()" id="payBtn" class="w-full bg-purple-600 py-3 rounded-lg font-semibold hover:bg-purple-700 transition">
+                Pay Now
+            </button>
+            
+            <p class="text-center text-gray-400 text-sm mt-4">
+                By completing this purchase, you agree to our Terms of Service
+            </p>
+        </div>
+    </div>
+</section>
+
+<script>
+let selectedPayment = 'midtrans';
+
+function selectPayment(method) {
+    selectedPayment = method;
+    document.querySelectorAll('.payment-btn').forEach(btn => {
+        btn.classList.remove('border-purple-500', 'border-2');
+        btn.classList.add('bg-gray-700');
+    });
+    const btn = document.getElementById(`btn${method.charAt(0).toUpperCase() + method.slice(1)}`);
+    btn.classList.add('border-purple-500', 'border-2');
+    btn.classList.remove('bg-gray-700');
+}
+
+async function processPayment() {
+    const payBtn = document.getElementById('payBtn');
+    payBtn.disabled = true;
+    payBtn.textContent = 'Processing...';
+    
+    const response = await fetch('/api/create-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: '{{ plan.name.lower() }}', payment_method: selectedPayment })
+    });
+    const data = await response.json();
+    
+    if (data.success && data.payment_url) {
+        window.location.href = data.payment_url;
+    } else {
+        alert('Payment failed: ' + (data.error || 'Unknown error'));
+        payBtn.disabled = false;
+        payBtn.textContent = 'Pay Now';
+    }
+}
+</script>
+{% endblock %}
