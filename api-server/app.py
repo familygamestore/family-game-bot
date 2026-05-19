@@ -10,26 +10,56 @@ from contextlib import asynccontextmanager
 import secrets
 import asyncpg
 import json
+import os
 
 # ====================================================================================================
 # DATABASE CONFIGURATION
 # ====================================================================================================
-DATABASE_URL = 'postgresql://postgres:postgres123@localhost:5432/botdb'
 
-# Redis - Optional, skip if not available
+# PRIORITAS: Ambil dari environment variable Railway
+DATABASE_URL = os.getenv('DATABASE_URL')
+
+if not DATABASE_URL:
+    print("=" * 60)
+    print("❌ ERROR: DATABASE_URL environment variable not set!")
+    print("=" * 60)
+    print("Please add PostgreSQL database and set DATABASE_URL in Railway Variables")
+    print("")
+    print("Steps:")
+    print("1. Click 'New' → 'Database' → 'PostgreSQL'")
+    print("2. Copy the DATABASE_URL from PostgreSQL service")
+    print("3. Go to API service → Variables → Add Variable")
+    print("4. Set Key='DATABASE_URL' and paste the value")
+    print("5. Redeploy")
+    print("=" * 60)
+    DATABASE_URL = None
+else:
+    # Mask password for logging
+    masked_url = DATABASE_URL.replace(DATABASE_URL.split(':')[2].split('@')[0], '****')
+    print(f"✅ DATABASE_URL loaded: {masked_url[:50]}...")
+
+# Redis configuration
+REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
+
+# Redis - Optional
+redis_client = None
 try:
     import redis
-    redis_client = redis.from_url('redis://localhost:6379', decode_responses=True)
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+    redis_client.ping()
     print("✅ Redis connected")
-except:
-    redis_client = None
-    print("⚠️  Redis not available, running without cache")
+except Exception as e:
+    print(f"⚠️ Redis not available: {e}")
 
 # ====================================================================================================
 # DATABASE FUNCTIONS
 # ====================================================================================================
 async def init_db():
     """Initialize database tables"""
+    if not DATABASE_URL:
+        print("❌ Cannot initialize database: DATABASE_URL not set")
+        return False
+    
     try:
         conn = await asyncpg.connect(DATABASE_URL)
         
@@ -82,26 +112,26 @@ async def init_db():
         return False
 
 # ====================================================================================================
-# LIFESPAN EVENT HANDLER (Modern FastAPI)
+# LIFESPAN EVENT HANDLER
 # ====================================================================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     print("🚀 Starting API Server...")
-    print(f"📊 Database URL: {DATABASE_URL}")
+    print(f"📊 Port: {os.getenv('PORT', '8080')}")
     
-    # Test database connection
-    try:
-        conn = await asyncpg.connect(DATABASE_URL)
-        await conn.close()
-        print("✅ Database connection successful!")
-        
-        # Initialize tables
-        await init_db()
-    except Exception as e:
-        print(f"❌ Database connection failed: {e}")
-        print("💡 Make sure PostgreSQL is running and database 'botdb' exists")
-        print("   Run: psql -U postgres -c 'CREATE DATABASE botdb;'")
+    if DATABASE_URL:
+        # Test database connection
+        try:
+            conn = await asyncpg.connect(DATABASE_URL)
+            await conn.close()
+            print("✅ Database connection successful!")
+            await init_db()
+        except Exception as e:
+            print(f"❌ Database connection failed: {e}")
+            print("💡 Make sure PostgreSQL is running and DATABASE_URL is correct")
+    else:
+        print("❌ DATABASE_URL not configured - database features will not work")
     
     yield  # Server runs here
     
@@ -109,7 +139,6 @@ async def lifespan(app: FastAPI):
     print("🛑 API Server shutting down...")
     if redis_client:
         redis_client.close()
-        print("✅ Redis connection closed")
 
 # ====================================================================================================
 # FASTAPI APP
@@ -130,7 +159,7 @@ app.add_middleware(
 )
 
 # ====================================================================================================
-# MODELS
+# MODELS (sama seperti sebelumnya)
 # ====================================================================================================
 class LicenseVerifyRequest(BaseModel):
     license_key: str
@@ -167,18 +196,29 @@ async def root():
 async def health_check():
     """Health check endpoint"""
     db_ok = False
-    try:
-        conn = await asyncpg.connect(DATABASE_URL)
-        await conn.close()
-        db_ok = True
-    except:
-        pass
+    db_error = None
     
-    redis_ok = redis_client is not None and redis_client.ping() if redis_client else False
+    if DATABASE_URL:
+        try:
+            conn = await asyncpg.connect(DATABASE_URL)
+            await conn.close()
+            db_ok = True
+        except Exception as e:
+            db_error = str(e)
+    
+    redis_ok = False
+    if redis_client:
+        try:
+            redis_client.ping()
+            redis_ok = True
+        except:
+            pass
     
     return {
         "status": "healthy",
         "database": "connected" if db_ok else "disconnected",
+        "database_error": db_error,
+        "database_url_configured": DATABASE_URL is not None,
         "redis": "connected" if redis_ok else "disabled",
         "timestamp": datetime.utcnow().isoformat()
     }
@@ -186,6 +226,9 @@ async def health_check():
 @app.post("/api/verify-license", response_model=LicenseVerifyResponse)
 async def verify_license(request: LicenseVerifyRequest):
     """Verify license key"""
+    if not DATABASE_URL:
+        return LicenseVerifyResponse(valid=False, error="Database not configured")
+    
     try:
         conn = await asyncpg.connect(DATABASE_URL)
         
@@ -251,7 +294,10 @@ async def verify_license(request: LicenseVerifyRequest):
 @app.post("/api/generate-license")
 async def generate_license(request: GenerateLicenseRequest, api_key: str = None):
     """Generate new license key (Admin only)"""
-    if api_key != "admin123":
+    if not DATABASE_URL:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    if api_key != os.getenv('ADMIN_API_KEY', 'admin123'):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     license_key = secrets.token_urlsafe(32)
@@ -274,6 +320,9 @@ async def generate_license(request: GenerateLicenseRequest, api_key: str = None)
 @app.post("/api/activate-license")
 async def activate_license(license_key: str, server_id: str, server_name: str, owner_id: str):
     """Activate license for a server"""
+    if not DATABASE_URL:
+        return {"success": False, "error": "Database not configured"}
+    
     conn = await asyncpg.connect(DATABASE_URL)
     
     license_row = await conn.fetchrow(
@@ -317,6 +366,9 @@ async def activate_license(license_key: str, server_id: str, server_name: str, o
 @app.post("/api/report-usage")
 async def report_usage(request: UsageReportRequest):
     """Report bot usage statistics"""
+    if not DATABASE_URL:
+        return {"success": False, "error": "Database not configured"}
+    
     conn = await asyncpg.connect(DATABASE_URL)
     await conn.execute(
         "INSERT INTO usage_stats (server_id, command_name, user_id) VALUES ($1, $2, $3)",
@@ -328,6 +380,9 @@ async def report_usage(request: UsageReportRequest):
 @app.get("/api/license-info/{license_key}")
 async def get_license_info(license_key: str):
     """Get license information"""
+    if not DATABASE_URL:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
     conn = await asyncpg.connect(DATABASE_URL)
     row = await conn.fetchrow("SELECT * FROM licenses WHERE license_key = $1", license_key)
     await conn.close()
@@ -347,6 +402,9 @@ async def get_license_info(license_key: str):
 @app.get("/api/server-info/{server_id}")
 async def get_server_info(server_id: str):
     """Get server information"""
+    if not DATABASE_URL:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
     conn = await asyncpg.connect(DATABASE_URL)
     row = await conn.fetchrow("SELECT * FROM servers WHERE server_id = $1", server_id)
     await conn.close()
@@ -367,6 +425,9 @@ async def get_server_info(server_id: str):
 @app.get("/api/stats")
 async def get_stats():
     """Get overall statistics"""
+    if not DATABASE_URL:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
     conn = await asyncpg.connect(DATABASE_URL)
     
     total_licenses = await conn.fetchval("SELECT COUNT(*) FROM licenses")
@@ -389,17 +450,16 @@ async def get_stats():
 # ====================================================================================================
 if __name__ == "__main__":
     import uvicorn
+    port = int(os.getenv('PORT', 8080))
     print("=" * 50)
     print("🎮 Family Game Store API Server")
     print("=" * 50)
-    print(f"📊 Database: {DATABASE_URL}")
-    print(f"🌐 Server will run on: http://0.0.0.0:8000")
-    print(f"🔍 Health check: http://localhost:8000/api/health")
-    print(f"📈 Stats: http://localhost:8000/api/stats")
+    print(f"🌐 Server will run on port: {port}")
+    print(f"🔗 Health check: http://localhost:{port}/api/health")
     print("=" * 50)
     uvicorn.run(
         app, 
         host="0.0.0.0", 
-        port=8000,
+        port=port,
         log_level="info"
     )
