@@ -16,7 +16,28 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', secrets.token_hex(32))
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///database.db')
+
+# ====================================================================================================
+# KONFIGURASI DATABASE - PAKAI DATABASE URL DARI RAILWAY
+# ====================================================================================================
+
+DATABASE_URL = os.getenv('DATABASE_URL')
+
+if DATABASE_URL and ('postgres' in DATABASE_URL or 'postgresql' in DATABASE_URL):
+    # Jika pakai PostgreSQL di Railway
+    app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
+    print("✅ Using PostgreSQL database from Railway")
+    
+    # Tambahkan engine options untuk PostgreSQL
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'pool_pre_ping': True,
+        'pool_recycle': 300,
+    }
+else:
+    # Fallback ke SQLite jika tidak ada DATABASE_URL
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
+    print("✅ Using SQLite database (local)")
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
@@ -93,7 +114,7 @@ class LicenseKey(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     key = db.Column(db.String(100), unique=True, nullable=False)
-    plan = db.Column(db.String(50), nullable=False)  # premium, enterprise
+    plan = db.Column(db.String(50), nullable=False)
     duration_days = db.Column(db.Integer, default=30)
     
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'))
@@ -119,7 +140,7 @@ class PaymentTransaction(db.Model):
     payment_method = db.Column(db.String(50))
     payment_details = db.Column(db.Text, nullable=True)
     
-    status = db.Column(db.String(50), default='pending')  # pending, success, failed, expired
+    status = db.Column(db.String(50), default='pending')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     paid_at = db.Column(db.DateTime, nullable=True)
     expired_at = db.Column(db.DateTime, nullable=True)
@@ -356,17 +377,14 @@ def activate_license():
     server_id = data.get('server_id')
     license_key = data.get('license_key')
     
-    # Find license
     license = LicenseKey.query.filter_by(key=license_key, is_used=False).first()
     if not license:
         return jsonify({'success': False, 'error': 'Invalid license key'})
     
-    # Find server
     server = Server.query.filter_by(id=server_id, owner_id=current_user.id).first()
     if not server:
         return jsonify({'success': False, 'error': 'Server not found'})
     
-    # Activate license
     license.is_used = True
     license.used_by = server.id
     license.used_at = datetime.utcnow()
@@ -376,7 +394,6 @@ def activate_license():
     server.license_expires = license.expires_at
     server.features = json.dumps(PLANS[license.plan]['limits'])
     
-    # Update user subscription
     user = current_user
     user.subscription_plan = license.plan
     user.subscription_expires = license.expires_at
@@ -414,7 +431,7 @@ def server_stats(server_id):
     })
 
 # ====================================================================================================
-# PAYMENT ROUTES
+# PAYMENT ROUTES (Sederhanakan untuk testing)
 # ====================================================================================================
 
 @app.route('/checkout/<plan_name>')
@@ -432,7 +449,6 @@ def checkout(plan_name):
 def create_payment():
     data = request.json
     plan_name = data.get('plan')
-    payment_method = data.get('payment_method', 'midtrans')
     
     if plan_name not in PLANS or plan_name == 'free':
         return jsonify({'success': False, 'error': 'Invalid plan'})
@@ -440,81 +456,50 @@ def create_payment():
     plan = PLANS[plan_name]
     transaction_id = secrets.token_urlsafe(16)
     
-    # Create transaction record
     transaction = PaymentTransaction(
         user_id=current_user.id,
         amount=plan['price'],
         plan=plan_name,
         duration_days=plan['duration'],
         transaction_id=transaction_id,
-        payment_method=payment_method,
-        expired_at=datetime.utcnow() + timedelta(hours=24)
+        status='pending'
     )
     
     db.session.add(transaction)
     db.session.commit()
     
-    # Integrate with Midtrans
-    if payment_method == 'midtrans':
-        return create_midtrans_payment(transaction, plan)
-    elif payment_method == 'xendit':
-        return create_xendit_payment(transaction, plan)
-    
-    return jsonify({'success': False, 'error': 'Invalid payment method'})
-
-def create_midtrans_payment(transaction, plan):
-    import hashlib
-    
-    order_id = f"ORDER-{transaction.id}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    gross_amount = plan['price_idr'] if 'price_idr' in plan else plan['price'] * 15000
-    
-    # Midtrans configuration
-    server_key = os.getenv('MIDTRANS_SERVER_KEY')
-    client_key = os.getenv('MIDTRANS_CLIENT_KEY')
-    
-    # Prepare payment data
-    payment_data = {
-        'transaction_details': {
-            'order_id': order_id,
-            'gross_amount': gross_amount
-        },
-        'credit_card': {
-            'secure': True
-        },
-        'customer_details': {
-            'first_name': current_user.username,
-            'email': current_user.email
-        }
-    }
-    
-    # Generate signature
-    signature = hashlib.sha512(f"{order_id}{gross_amount}{server_key}".encode()).hexdigest()
-    
+    # Mock payment - untuk testing langsung sukses
     return jsonify({
         'success': True,
-        'payment_url': f"https://app.sandbox.midtrans.com/snap/v2/transactions",
-        'order_id': order_id,
-        'amount': gross_amount,
-        'signature': signature
+        'transaction_id': transaction_id,
+        'amount': plan['price'],
+        'payment_url': f'/api/payment-mock/{transaction_id}'
     })
 
-def create_xendit_payment(transaction, plan):
-    amount = plan['price_idr'] if 'price_idr' in plan else plan['price'] * 15000
+@app.route('/api/payment-mock/<transaction_id>')
+def payment_mock(transaction_id):
+    transaction = PaymentTransaction.query.filter_by(transaction_id=transaction_id).first()
+    if transaction:
+        transaction.status = 'success'
+        transaction.paid_at = datetime.utcnow()
+        
+        license_key = secrets.token_urlsafe(32)
+        new_license = LicenseKey(
+            key=license_key,
+            plan=transaction.plan,
+            duration_days=transaction.duration_days,
+            created_by=transaction.user_id
+        )
+        db.session.add(new_license)
+        db.session.commit()
+        
+        return jsonify({'success': True, 'license_key': license_key})
     
-    # Xendit configuration
-    secret_key = os.getenv('XENDIT_SECRET_KEY')
-    
-    return jsonify({
-        'success': True,
-        'payment_url': f"https://checkout.xendit.co/v2/invoice",
-        'amount': amount,
-        'external_id': f"INV-{transaction.id}"
-    })
+    return jsonify({'success': False})
 
 @app.route('/api/payment-callback', methods=['POST'])
 def payment_callback():
     data = request.json
-    order_id = data.get('order_id')
     transaction_id = data.get('transaction_id')
     status = data.get('status')
     
@@ -526,21 +511,15 @@ def payment_callback():
         transaction.status = 'success'
         transaction.paid_at = datetime.utcnow()
         
-        # Generate license key
         license_key = secrets.token_urlsafe(32)
-        
         new_license = LicenseKey(
             key=license_key,
             plan=transaction.plan,
             duration_days=transaction.duration_days,
             created_by=transaction.user_id
         )
-        
         db.session.add(new_license)
         db.session.commit()
-        
-        # Send email to user
-        send_license_email(transaction.user.email, license_key, transaction.plan)
         
         return jsonify({'success': True, 'license_key': license_key})
     
@@ -548,39 +527,6 @@ def payment_callback():
     db.session.commit()
     
     return jsonify({'success': False})
-
-def send_license_email(user_email, license_key, plan):
-    """Send license key via email"""
-    import smtplib
-    from email.mime.text import MIMEText
-    
-    subject = f"Your {plan.upper()} License Key - Family Game Store Bot"
-    body = f"""
-    Thank you for purchasing {plan.upper()} plan!
-    
-    Your License Key: {license_key}
-    
-    How to activate:
-    1. Invite the bot to your server
-    2. Use command: !activate {license_key}
-    3. Enjoy premium features!
-    
-    Need help? Contact support@familygamestore.com
-    """
-    
-    try:
-        msg = MIMEText(body)
-        msg['Subject'] = subject
-        msg['From'] = os.getenv('SMTP_USER')
-        msg['To'] = user_email
-        
-        server = smtplib.SMTP(os.getenv('SMTP_HOST'), int(os.getenv('SMTP_PORT')))
-        server.starttls()
-        server.login(os.getenv('SMTP_USER'), os.getenv('SMTP_PASSWORD'))
-        server.send_message(msg)
-        server.quit()
-    except Exception as e:
-        print(f"Email error: {e}")
 
 # ====================================================================================================
 # ADMIN ROUTES
@@ -660,9 +606,10 @@ def utility_processor():
 
 if __name__ == '__main__':
     with app.app_context():
+        # Buat semua tabel
         db.create_all()
         
-        # Create admin account if not exists
+        # Buat admin account jika belum ada
         admin_email = os.getenv('ADMIN_EMAIL', 'admin@example.com')
         admin_password = os.getenv('ADMIN_PASSWORD', 'admin123')
         
@@ -676,6 +623,9 @@ if __name__ == '__main__':
             admin.set_password(admin_password)
             db.session.add(admin)
             db.session.commit()
-            print(f"Admin account created: {admin_email}")
+            print(f"✅ Admin account created: {admin_email}")
+        
+        print(f"✅ Database: {app.config['SQLALCHEMY_DATABASE_URI']}")
     
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
