@@ -16,26 +16,8 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', secrets.token_hex(32))
-
-# ====================================================================================================
-# KONFIGURASI DATABASE - PAKSA PAKAI SQLITE
-# ====================================================================================================
-
-# HAPUS atau KOMENTAR semua kode yang cek DATABASE_URL
-# PAKSA PAKAI SQLITE SAJA
-
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://botuser:botpassword@postgres:5432/botdb')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_pre_ping': True,
-}
-
-print("=" * 50)
-print("📊 WEB DASHBOARD DATABASE")
-print("=" * 50)
-print(f"✅ Database: SQLite (database.db)")
-print(f"✅ PostgreSQL: DISABLED (to avoid errors)")
-print("=" * 50)
 
 db = SQLAlchemy(app)
 login_manager = LoginManager()
@@ -43,7 +25,7 @@ login_manager.init_app(app)
 login_manager.login_view = 'login'
 login_manager.login_message_category = 'warning'
 
-API_URL = os.getenv('API_URL', 'http://localhost:8000')
+API_URL = os.getenv('API_URL', 'http://api:8000')
 
 # ====================================================================================================
 # DATABASE MODELS
@@ -61,17 +43,11 @@ class User(UserMixin, db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # Subscription
     subscription_plan = db.Column(db.String(50), default='free')
     subscription_expires = db.Column(db.DateTime, nullable=True)
-    
-    # API Key
     api_key = db.Column(db.String(100), unique=True, nullable=True)
     
-    # Relations
     servers = db.relationship('Server', backref='owner', lazy=True)
-    licenses = db.relationship('LicenseKey', backref='creator', lazy=True)
-    transactions = db.relationship('PaymentTransaction', backref='user', lazy=True)
     
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -80,7 +56,8 @@ class User(UserMixin, db.Model):
         return check_password_hash(self.password_hash, password)
     
     def is_premium(self):
-        return self.subscription_plan in ['premium', 'enterprise'] and self.subscription_expires > datetime.utcnow()
+        return self.subscription_plan in ['premium', 'enterprise'] and \
+               self.subscription_expires and self.subscription_expires > datetime.utcnow()
 
 class Server(db.Model):
     __tablename__ = 'servers'
@@ -98,58 +75,22 @@ class Server(db.Model):
     is_active = db.Column(db.Boolean, default=True)
     joined_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_active = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    # Statistics
     member_count = db.Column(db.Integer, default=0)
     message_count = db.Column(db.Integer, default=0)
-    
-    def get_features(self):
-        return json.loads(self.features) if self.features else {}
 
 class LicenseKey(db.Model):
     __tablename__ = 'license_keys'
     
     id = db.Column(db.Integer, primary_key=True)
     key = db.Column(db.String(100), unique=True, nullable=False)
-    plan = db.Column(db.String(50), nullable=False)  # premium, enterprise
+    plan = db.Column(db.String(50), nullable=False)
     duration_days = db.Column(db.Integer, default=30)
-    
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
     used_by = db.Column(db.Integer, db.ForeignKey('servers.id'), nullable=True)
     used_at = db.Column(db.DateTime, nullable=True)
     is_used = db.Column(db.Boolean, default=False)
-    
     expires_at = db.Column(db.DateTime, nullable=True)
-
-class PaymentTransaction(db.Model):
-    __tablename__ = 'payment_transactions'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
-    amount = db.Column(db.Float, nullable=False)
-    currency = db.Column(db.String(3), default='USD')
-    plan = db.Column(db.String(50), nullable=False)
-    duration_days = db.Column(db.Integer, nullable=False)
-    
-    transaction_id = db.Column(db.String(100), unique=True)
-    payment_method = db.Column(db.String(50))
-    payment_details = db.Column(db.Text, nullable=True)
-    
-    status = db.Column(db.String(50), default='pending')  # pending, success, failed, expired
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    paid_at = db.Column(db.DateTime, nullable=True)
-    expired_at = db.Column(db.DateTime, nullable=True)
-
-class BotUsage(db.Model):
-    __tablename__ = 'bot_usage'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    server_id = db.Column(db.String(50), nullable=False)
-    command_name = db.Column(db.String(100))
-    user_id = db.Column(db.String(50))
-    recorded_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 # ====================================================================================================
 # PRICING PLANS
@@ -162,20 +103,11 @@ PLANS = {
         'price_idr': 0,
         'duration': 0,
         'features': [
-            'Invite Tracker Basic (50 invites)',
+            'Invite Tracker Basic',
             'Leveling System Basic',
-            'Giveaway 1 round/month',
-            'Up to 100 members',
-            'Basic Support'
-        ],
-        'limits': {
-            'max_members': 100,
-            'max_giveaways': 1,
-            'max_invites': 50,
-            'custom_commands': False,
-            'voice_xp': False,
-            'level_roles': False
-        }
+            '1 Giveaway/month',
+            'Up to 100 members'
+        ]
     },
     'premium': {
         'name': 'Premium',
@@ -186,22 +118,13 @@ PLANS = {
             '✅ Unlimited Invite Tracking',
             '✅ Advanced Leveling System',
             '✅ Voice XP Bonus',
-            '✅ Unlimited Giveaway Rounds',
+            '✅ Unlimited Giveaways',
             '✅ Custom Commands',
-            '✅ Weekly Auto Leaderboard',
-            '✅ Priority Support',
-            '✅ No Member Limit',
+            '✅ Welcome Messages',
             '✅ Level Roles',
-            '✅ Welcome Messages'
-        ],
-        'limits': {
-            'max_members': 0,
-            'max_giveaways': 0,
-            'max_invites': 0,
-            'custom_commands': True,
-            'voice_xp': True,
-            'level_roles': True
-        }
+            '✅ Export Statistics',
+            '✅ Priority Support'
+        ]
     },
     'enterprise': {
         'name': 'Enterprise',
@@ -214,25 +137,13 @@ PLANS = {
             '✅ Custom Bot Development',
             '✅ API Access',
             '✅ White Label Option',
-            '✅ Multiple Server License',
-            '✅ Analytics Dashboard',
-            '✅ Auto Backup & Restore',
-            '✅ Custom Integrations'
-        ],
-        'limits': {
-            'max_members': 0,
-            'max_giveaways': 0,
-            'max_invites': 0,
-            'custom_commands': True,
-            'voice_xp': True,
-            'level_roles': True,
-            'multi_server': True
-        }
+            '✅ Multi-Server License'
+        ]
     }
 }
 
 # ====================================================================================================
-# AUTHENTICATION ROUTES
+# AUTHENTICATION
 # ====================================================================================================
 
 @login_manager.user_loader
@@ -255,9 +166,8 @@ def login():
         user = User.query.filter_by(email=email).first()
         if user and user.check_password(password):
             login_user(user)
-            next_page = request.args.get('next')
             flash('Login successful!', 'success')
-            return redirect(next_page or url_for('dashboard'))
+            return redirect(url_for('dashboard'))
         else:
             flash('Invalid email or password', 'danger')
     
@@ -310,7 +220,7 @@ def logout():
     return redirect(url_for('index'))
 
 # ====================================================================================================
-# DASHBOARD ROUTES
+# DASHBOARD
 # ====================================================================================================
 
 @app.route('/dashboard')
@@ -328,15 +238,24 @@ def dashboard_servers():
 @app.route('/dashboard/billing')
 @login_required
 def dashboard_billing():
-    transactions = PaymentTransaction.query.filter_by(user_id=current_user.id).order_by(PaymentTransaction.created_at.desc()).all()
-    return render_template('dashboard_billing.html', transactions=transactions, plans=PLANS)
+    return render_template('dashboard_billing.html')
 
 @app.route('/pricing')
 def pricing():
     return render_template('pricing.html', plans=PLANS)
 
+@app.route('/checkout/<plan_name>')
+@login_required
+def checkout(plan_name):
+    if plan_name not in PLANS or plan_name == 'free':
+        flash('Invalid plan selected', 'danger')
+        return redirect(url_for('pricing'))
+    
+    plan = PLANS[plan_name]
+    return render_template('checkout.html', plan=plan)
+
 # ====================================================================================================
-# API ROUTES (Internal)
+# API ROUTES
 # ====================================================================================================
 
 @app.route('/api/add-server', methods=['POST'])
@@ -374,14 +293,17 @@ def activate_license():
     server_id = data.get('server_id')
     license_key = data.get('license_key')
     
+    # Find license
     license = LicenseKey.query.filter_by(key=license_key, is_used=False).first()
     if not license:
         return jsonify({'success': False, 'error': 'Invalid license key'})
     
+    # Find server
     server = Server.query.filter_by(id=server_id, owner_id=current_user.id).first()
     if not server:
         return jsonify({'success': False, 'error': 'Server not found'})
     
+    # Activate license
     license.is_used = True
     license.used_by = server.id
     license.used_at = datetime.utcnow()
@@ -389,141 +311,47 @@ def activate_license():
     
     server.license_key = license_key
     server.license_expires = license.expires_at
-    server.features = json.dumps(PLANS[license.plan]['limits'])
     
-    user = current_user
-    user.subscription_plan = license.plan
-    user.subscription_expires = license.expires_at
+    # Update user subscription
+    current_user.subscription_plan = license.plan
+    current_user.subscription_expires = license.expires_at
     
     db.session.commit()
     
     return jsonify({
         'success': True,
         'plan': license.plan,
-        'expires': license.expires_at.isoformat(),
-        'features': PLANS[license.plan]['features']
+        'expires': license.expires_at.isoformat()
     })
 
-@app.route('/api/server-stats/<int:server_id>')
+@app.route('/api/servers')
 @login_required
-def server_stats(server_id):
-    server = Server.query.filter_by(id=server_id, owner_id=current_user.id).first()
-    if not server:
-        return jsonify({'error': 'Server not found'}), 404
-    
-    usage = BotUsage.query.filter_by(server_id=server.server_id).order_by(BotUsage.recorded_at.desc()).limit(50).all()
+def get_servers():
+    servers = Server.query.filter_by(owner_id=current_user.id).all()
+    return jsonify([{
+        'id': s.id,
+        'server_id': s.server_id,
+        'name': s.server_name,
+        'icon': s.server_icon,
+        'license_key': s.license_key,
+        'expires': s.license_expires.isoformat() if s.license_expires else None,
+        'member_count': s.member_count,
+        'message_count': s.message_count
+    } for s in servers])
+
+@app.route('/api/stats')
+@login_required
+def get_stats():
+    servers = Server.query.filter_by(owner_id=current_user.id).all()
+    total_servers = len(servers)
+    premium_servers = len([s for s in servers if s.license_key])
     
     return jsonify({
-        'server': {
-            'name': server.server_name,
-            'license': server.license_key,
-            'expires': server.license_expires.isoformat() if server.license_expires else None,
-            'features': server.get_features()
-        },
-        'usage': [{
-            'date': u.recorded_at.strftime('%Y-%m-%d %H:%M'),
-            'command': u.command_name,
-            'user': u.user_id
-        } for u in usage]
+        'total_servers': total_servers,
+        'premium_servers': premium_servers,
+        'total_messages': sum(s.message_count for s in servers),
+        'total_users': sum(s.member_count for s in servers)
     })
-
-# ====================================================================================================
-# PAYMENT ROUTES (Sederhanakan untuk testing)
-# ====================================================================================================
-
-@app.route('/checkout/<plan_name>')
-@login_required
-def checkout(plan_name):
-    if plan_name not in PLANS or plan_name == 'free':
-        flash('Invalid plan selected', 'danger')
-        return redirect(url_for('pricing'))
-    
-    plan = PLANS[plan_name]
-    return render_template('checkout.html', plan=plan)
-
-@app.route('/api/create-payment', methods=['POST'])
-@login_required
-def create_payment():
-    data = request.json
-    plan_name = data.get('plan')
-    
-    if plan_name not in PLANS or plan_name == 'free':
-        return jsonify({'success': False, 'error': 'Invalid plan'})
-    
-    plan = PLANS[plan_name]
-    transaction_id = secrets.token_urlsafe(16)
-    
-    transaction = PaymentTransaction(
-        user_id=current_user.id,
-        amount=plan['price'],
-        plan=plan_name,
-        duration_days=plan['duration'],
-        transaction_id=transaction_id,
-        status='pending'
-    )
-    
-    db.session.add(transaction)
-    db.session.commit()
-    
-    # Mock payment - untuk testing langsung sukses
-    return jsonify({
-        'success': True,
-        'transaction_id': transaction_id,
-        'amount': plan['price'],
-        'payment_url': f'/api/payment-mock/{transaction_id}'
-    })
-
-@app.route('/api/payment-mock/<transaction_id>')
-def payment_mock(transaction_id):
-    transaction = PaymentTransaction.query.filter_by(transaction_id=transaction_id).first()
-    if transaction:
-        transaction.status = 'success'
-        transaction.paid_at = datetime.utcnow()
-        
-        license_key = secrets.token_urlsafe(32)
-        new_license = LicenseKey(
-            key=license_key,
-            plan=transaction.plan,
-            duration_days=transaction.duration_days,
-            created_by=transaction.user_id
-        )
-        db.session.add(new_license)
-        db.session.commit()
-        
-        return jsonify({'success': True, 'license_key': license_key})
-    
-    return jsonify({'success': False})
-
-@app.route('/api/payment-callback', methods=['POST'])
-def payment_callback():
-    data = request.json
-    transaction_id = data.get('transaction_id')
-    status = data.get('status')
-    
-    transaction = PaymentTransaction.query.filter_by(transaction_id=transaction_id).first()
-    if not transaction:
-        return jsonify({'success': False}), 404
-    
-    if status == 'success':
-        transaction.status = 'success'
-        transaction.paid_at = datetime.utcnow()
-        
-        license_key = secrets.token_urlsafe(32)
-        new_license = LicenseKey(
-            key=license_key,
-            plan=transaction.plan,
-            duration_days=transaction.duration_days,
-            created_by=transaction.user_id
-        )
-        db.session.add(new_license)
-        db.session.commit()
-        
-        return jsonify({'success': True, 'license_key': license_key})
-    
-    transaction.status = 'failed'
-    db.session.commit()
-    
-    return jsonify({'success': False})
 
 # ====================================================================================================
 # ADMIN ROUTES
@@ -538,14 +366,9 @@ def admin_panel():
     
     users = User.query.all()
     licenses = LicenseKey.query.all()
-    transactions = PaymentTransaction.query.all()
     servers = Server.query.all()
     
-    return render_template('admin.html', 
-                          users=users, 
-                          licenses=licenses, 
-                          transactions=transactions,
-                          servers=servers)
+    return render_template('admin.html', users=users, licenses=licenses, servers=servers)
 
 @app.route('/api/admin/generate-license', methods=['POST'])
 @login_required
@@ -587,26 +410,14 @@ def admin_delete_user(user_id):
     return jsonify({'success': True})
 
 # ====================================================================================================
-# TEMPLATE CONTEXT PROCESSOR
-# ====================================================================================================
-
-@app.context_processor
-def utility_processor():
-    return {
-        'now': datetime.utcnow(),
-        'PLANS': PLANS
-    }
-
-# ====================================================================================================
 # RUN APP
 # ====================================================================================================
 
 if __name__ == '__main__':
     with app.app_context():
-        # Buat semua tabel
         db.create_all()
         
-        # Buat admin account jika belum ada
+        # Create admin account if not exists
         admin_email = os.getenv('ADMIN_EMAIL', 'admin@example.com')
         admin_password = os.getenv('ADMIN_PASSWORD', 'admin123')
         
@@ -615,14 +426,13 @@ if __name__ == '__main__':
             admin = User(
                 username='admin',
                 email=admin_email,
-                is_admin=True
+                is_admin=True,
+                api_key='admin_api_key_12345'
             )
             admin.set_password(admin_password)
             db.session.add(admin)
             db.session.commit()
-            print(f"✅ Admin account created: {admin_email}")
-        
-        print(f"✅ Database: SQLite (database.db)")
+            print(f"✅ Admin account created: {admin_email} / {admin_password}")
     
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
