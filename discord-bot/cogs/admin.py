@@ -11,7 +11,7 @@ class Admin(commands.Cog):
         self.bot = bot
 
     async def cog_check(self, ctx):
-        return ctx.author.id in [123456789012345678]
+        return ctx.author.id in [1500411167628066876]
     
     @commands.command(name="reload")
     @commands.is_owner()
